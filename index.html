@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Guardrails Playground · 8 gates between an incident agent and your codebase</title>
+  <meta name="description" content="Runnable twin of the n8n template AI Incident Agent · 8 Guardrail Gates. Send an incident webhook and watch dedupe, schema, model routing, read-only scope, diff format, sandbox, confidence and Slack approval gates run." />
+  <meta property="og:title" content="Agent Guardrails Playground" />
+  <meta property="og:description" content="Send an incident webhook and watch the agent's patch pass or stop at 8 guardrail gates before a person approves it in Slack." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://agent-guardrails-playground.vercel.app" />
+  <meta property="og:image" content="https://agent-guardrails-playground.vercel.app/docs/screenshot.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#F7F7F5" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23111111'/%3E%3Cpath d='M8 11h16M11 16h10M14 21h4' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-in">
+      <a class="brand" href="./" aria-label="Agent Guardrails Playground home">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M8 11h16M11 16h10M14 21h4" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>
+        <span>Agent Guardrails</span>
+      </a>
+      <span class="crumb" aria-hidden="true">/</span>
+      <span class="crumb-cur">Playground</span>
+      <div class="nav-right">
+        <span id="modeBadge" class="badge" role="status" title="Checking server mode">Checking…</span>
+        <a class="nav-link" href="https://github.com/Saitarun29/agent-guardrails-playground/blob/main/n8n/ai-agent-8-gates.n8n.json" target="_blank" rel="noopener">n8n workflow</a>
+        <a class="nav-link" href="https://github.com/Saitarun29/agent-guardrails-playground" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <div class="page-head">
+      <div>
+        <h1>Agent guardrails playground</h1>
+        <p class="lede">Send an incident webhook. The agent proposes a patch, and eight gates decide whether it reaches a person in Slack.</p>
+      </div>
+      <dl class="facts" aria-label="Pipeline thresholds">
+        <div><dt>Dedupe window</dt><dd class="num">10 min</dd></div>
+        <div><dt>Confidence floor</dt><dd class="num">0.80</dd></div>
+        <div><dt>Write scopes</dt><dd class="num">0</dd></div>
+      </dl>
+    </div>
+
+    <div class="layout">
+      <!-- Input -->
+      <section class="panel" aria-labelledby="inTitle">
+        <div class="panel-head">
+          <h2 id="inTitle">Incident webhook</h2>
+          <code class="endpoint">POST /webhook/agent-alert</code>
+        </div>
+        <div class="panel-body">
+          <p class="label" id="presetLabel">Scenario</p>
+          <div id="presets" class="presets" role="radiogroup" aria-labelledby="presetLabel"></div>
+
+          <div class="editor-head">
+            <label class="label" for="editor">Payload</label>
+            <span id="jsonState" class="json-state ok" aria-live="polite">Valid JSON</span>
+          </div>
+          <textarea id="editor" spellcheck="false" maxlength="16000" aria-describedby="editorHelp"></textarea>
+          <p id="editorHelp" class="help">Same shape as the n8n template. Required: alert_id, service, error, repo.</p>
+          <p id="presetNote" class="note" hidden></p>
+
+          <div class="actions">
+            <button id="runBtn" class="btn btn-primary" type="button"><span class="btn-label">Run gates</span><kbd>Ctrl ↵</kbd></button>
+            <button id="freshBtn" class="btn" type="button" title="Give this alert a new alert_id so dedupe treats it as new">New alert_id</button>
+            <button id="resetBtn" class="btn" type="button" title="Forget alerts seen in this browser">Reset dedupe</button>
+          </div>
+          <div id="webhookOut" class="webhook-out" hidden></div>
+        </div>
+      </section>
+
+      <!-- Pipeline -->
+      <section class="panel" aria-labelledby="pipeTitle">
+        <div class="panel-head">
+          <h2 id="pipeTitle">Guardrail pipeline</h2>
+          <span id="pipeMeta" class="meta">Idle</span>
+        </div>
+        <div class="pipe-cols" aria-hidden="true"><span>#</span><span>Gate</span><span>Status</span><span class="r">Time</span></div>
+        <ol id="pipeline" class="pipeline" aria-live="polite"></ol>
+      </section>
+    </div>
+
+    <div id="errorBox" class="alert" role="alert" hidden></div>
+
+    <!-- Outcome -->
+    <section id="resultCard" class="panel" aria-labelledby="resTitle" aria-live="polite" hidden>
+      <div class="panel-head">
+        <h2 id="resTitle">Outcome</h2>
+        <span id="outcomePill" class="badge"></span>
+      </div>
+      <div id="stats" class="stats"></div>
+      <div id="resultBody" class="result-body"></div>
+    </section>
+
+    <!-- Audit -->
+    <section class="panel" aria-labelledby="audTitle">
+      <div class="panel-head">
+        <h2 id="audTitle">Audit log</h2>
+        <div class="head-actions">
+          <span class="meta">Stored in this browser</span>
+          <button id="exportBtn" class="btn btn-sm" type="button">Export CSV</button>
+          <button id="clearBtn" class="btn btn-sm" type="button">Clear</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th scope="col">Time</th><th scope="col">Alert</th><th scope="col">Service</th><th scope="col">Outcome</th><th scope="col">Model</th><th scope="col" class="r">Conf.</th><th scope="col" class="r">Cost</th><th scope="col">Decision</th></tr></thead>
+          <tbody id="auditBody"></tbody>
+        </table>
+        <p id="auditEmpty" class="empty">No runs yet. Every run, block and approval decision is recorded here.</p>
+      </div>
+    </section>
+
+    <section class="principles" aria-label="Design principles">
+      <div><h3>The model never writes</h3><p>It proposes a unified diff using read-only tools. Tests and a person decide what ships.</p></div>
+      <div><h3>Cheap by default</h3><p>Only critical or long incidents reach the strong model. Duplicates and bad payloads cost nothing.</p></div>
+      <div><h3>Same logic as the n8n import</h3><p>Gate rules, thresholds and Slack copy mirror the workflow node for node.</p></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-in">
+      <p>Built by Sai Tarun · <a href="https://saitarun.com" target="_blank" rel="noopener">saitarun.com</a></p>
+      <nav class="foot-links" aria-label="Author links">
+        <a href="https://saitarun.com" target="_blank" rel="noopener">Site</a>
+        <a href="https://linkedin.com/in/ronanki-sai-tarun" target="_blank" rel="noopener">LinkedIn</a>
+        <a href="https://x.com/SaiTarunRonanki" target="_blank" rel="noopener">X</a>
+        <a href="https://github.com/Saitarun29/agent-guardrails-playground" target="_blank" rel="noopener">GitHub repo</a>
+        <a class="btn btn-primary btn-sm" href="https://wa.me/918008941430?text=Hello%20Sai%20Tarun%20Ronanki,%20I%20want%20to%20discuss%20about%20my%20workflow" target="_blank" rel="noopener">Discuss your workflow</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script type="module" src="assets/app.js"></script>
+</body>
+</html>

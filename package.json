@@ -1,0 +1,6 @@
+{
+  "name": "agent-guardrails-playground",
+  "description": "Live demo of the n8n template \"AI Incident Agent · 8 Guardrail Gates\": watch an incident webhook pass (or fail) dedupe, schema, routing, scope, format, sandbox, confidence and Slack approval gates.",
+  "type": "module",
+  "private": true
+}

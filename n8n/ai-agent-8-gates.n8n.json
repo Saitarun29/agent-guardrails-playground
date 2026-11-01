@@ -1,0 +1,504 @@
+{
+  "name": "AI Incident Agent · 8 Guardrail Gates (by @SaiTarunRonanki)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-alert",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "741c9342-14dd-4e6e-80be-d6fa04c6c08c",
+      "name": "Webhook (Alert In)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "d3bc1f7a-bd9c-4144-b02b-9f5afc9f0382"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Drop duplicate alerts seen in the last 10 minutes\nconst store = $getWorkflowStaticData('global');\nstore.seen = store.seen || {};\nconst now = Date.now();\nfor (const k in store.seen) if (now - store.seen[k] > 600000) delete store.seen[k];\nconst body = $input.first().json.body || {};\nconst key = body.alert_id || JSON.stringify(body).slice(0, 200);\nconst duplicate = !!store.seen[key];\nif (!duplicate) store.seen[key] = now;\nreturn [{ json: { ...body, _key: key, duplicate } }];"
+      },
+      "id": "6f69a509-258a-461c-887a-291b49c24a72",
+      "name": "Gate 1 · Webhook Dedup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "13dd36b7-3ced-40f7-9769-dc627619d7a4",
+              "leftValue": "={{ $json.duplicate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a957dacf-332b-483a-ab72-cbe663f57c99",
+      "name": "Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reject anything missing required fields before it ever reaches a model\nconst a = $input.first().json;\nconst required = ['alert_id', 'service', 'error', 'repo'];\nconst missing = required.filter(f => !a[f]);\nreturn [{ json: { ...a, schema_ok: missing.length === 0, missing } }];"
+      },
+      "id": "04c9f58e-1c69-4fa2-a248-92b59c1e3e39",
+      "name": "Gate 2 · Schema Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "19eccbb6-2a55-4b2d-9da8-58b62a5a428a",
+              "leftValue": "={{ $json.schema_ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "166898e3-6a33-4a88-a79e-c267049f9605",
+      "name": "Schema OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        880,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gate 3: route cheap vs strong model by severity\n// Gate 4: read-only tool scope (allowlist) passed to the agent\n// Gate 5: few-shot with diff-format examples so output is always a patch\nconst a = $input.first().json;\nconst model = (a.severity === 'critical' || (a.error || '').length > 800)\n  ? 'claude-sonnet-4-5' : 'claude-haiku-4-5';\nconst allowedTools = ['git.blame:read', 'git.log:read', 'logs.search:read']; // no write scopes\nconst fewShot = `Return ONLY JSON: {\"diagnosis\": string, \"patch\": unified diff string, \"confidence\": 0-1}.\nExample patch:\n--- a/src/pay.js\n+++ b/src/pay.js\n@@ -12,1 +12,1 @@\n-  const amt = req.body.amount\n+  const amt = Number(req.body.amount ?? 0)`;\nconst prompt = `${fewShot}\\n\\nService: ${a.service}\\nRepo: ${a.repo}\\nError:\\n${a.error}\\nAllowed read-only tools: ${allowedTools.join(', ')}`;\nreturn [{ json: { ...a, model, allowedTools, prompt } }];"
+      },
+      "id": "92d50856-6a68-4585-bb2e-7a707fe8cae1",
+      "name": "Gates 3-5 · Router + MCP Scope + Few-Shot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, max_tokens: 1500, messages: [{ role: 'user', content: $json.prompt }] }) }}",
+        "options": {}
+      },
+      "id": "ca5a4ec9-3ba0-4a73-97e3-d06a49f5fc7e",
+      "name": "Claude (Diagnose + Patch)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $('Gates 3-5 · Router + MCP Scope + Few-Shot').first().json;\nlet out = { diagnosis: '', patch: '', confidence: 0 };\ntry { out = JSON.parse($input.first().json.content[0].text); } catch (e) { out.diagnosis = 'Unparseable model output'; }\nreturn [{ json: { ...prev, ...out } }];"
+      },
+      "id": "badf2473-aa22-457e-8754-a6d1b012d76a",
+      "name": "Parse Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SANDBOX_URL || 'https://your-sandbox.example.com/dry-run' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ repo: $json.repo, patch: $json.patch, run: 'tests' }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "2881fdce-0660-422d-a0bc-6126247fa7c6",
+      "name": "Gate 6 · Sandbox Verify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ],
+      "notes": "Point SANDBOX_URL at your dry-run service (Docker/E2B/GitHub Actions). Expects {passed: boolean}.",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const fix = $('Parse Output').first().json;\nconst sandbox = $input.first().json || {};\nconst passed = sandbox.passed === true;\nconst ok = passed && Number(fix.confidence) >= 0.8;\nreturn [{ json: { ...fix, sandbox_passed: passed, ready: ok } }];"
+      },
+      "id": "686d426e-8bf7-4598-89c2-f94b0687adf9",
+      "name": "Gate 7 · Confidence Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b273e163-8288-4ee6-8a8b-6a1e3a512ca9",
+              "leftValue": "={{ $json.ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "06463e0f-7269-4742-bb08-7f91f7695968",
+      "name": "Ready for Approval?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#incidents",
+          "mode": "name"
+        },
+        "message": "=*{{ $json.service }}* · {{ $json.diagnosis }}\nConfidence {{ $json.confidence }} · sandbox tests passed\n```{{ $json.patch }}```",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double"
+          }
+        },
+        "options": {}
+      },
+      "id": "17e0f70f-7a43-42a7-bf4a-9f6bee652e0a",
+      "name": "Gate 8 · Slack Approval",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#incidents",
+          "mode": "name"
+        },
+        "text": "=⚠️ {{ $json.service }}: agent not confident or sandbox failed. Needs a human.\n{{ $json.diagnosis }}",
+        "otherOptions": {}
+      },
+      "id": "cc553684-2e09-4033-8216-e217eb538e97",
+      "name": "Escalate to Human",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'accepted' }) }}",
+        "options": {}
+      },
+      "id": "ebe3b7e4-538e-49e1-bbcb-ae581dc19e99",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', missing: $json.missing }) }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "0ec45634-ed74-4024-ac3c-380fb5a38001",
+      "name": "Reject Bad Payload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'processing' }) }}",
+        "options": {}
+      },
+      "id": "04fccc9f-c37a-46b6-a1cf-31277d2bbd6d",
+      "name": "Ack",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## AI Incident Agent · 8 Guardrail Gates\nAlert in → tested, human-approved patch. The model only *proposes* a diff.\n\n1 Dedup (10 min) · 2 Schema (422) · 3 Model router · 4 Read-only tool scope · 5 Few-shot JSON diff · 6 Sandbox tests · 7 Confidence ≥ 0.8 · 8 Slack double-approval\n\nEnv: `ANTHROPIC_API_KEY`, `SANDBOX_URL`. Connect Slack creds on Gate 8 + Escalate. No secrets in this file.\n\nLive demo: https://agent-guardrails-playground.vercel.app",
+        "height": 300,
+        "width": 520,
+        "color": 5
+      },
+      "id": "5df77987-b065-46d1-8936-3f21203cd4f4",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -210
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook (Alert In)": {
+      "main": [
+        [
+          {
+            "node": "Gate 1 · Webhook Dedup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate 1 · Webhook Dedup": {
+      "main": [
+        [
+          {
+            "node": "Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gate 2 · Schema Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate 2 · Schema Gate": {
+      "main": [
+        [
+          {
+            "node": "Schema OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schema OK?": {
+      "main": [
+        [
+          {
+            "node": "Ack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gates 3-5 · Router + MCP Scope + Few-Shot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject Bad Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gates 3-5 · Router + MCP Scope + Few-Shot": {
+      "main": [
+        [
+          {
+            "node": "Claude (Diagnose + Patch)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude (Diagnose + Patch)": {
+      "main": [
+        [
+          {
+            "node": "Parse Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Output": {
+      "main": [
+        [
+          {
+            "node": "Gate 6 · Sandbox Verify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate 6 · Sandbox Verify": {
+      "main": [
+        [
+          {
+            "node": "Gate 7 · Confidence Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate 7 · Confidence Gate": {
+      "main": [
+        [
+          {
+            "node": "Ready for Approval?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready for Approval?": {
+      "main": [
+        [
+          {
+            "node": "Gate 8 · Slack Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalate to Human",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
